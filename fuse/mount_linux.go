@@ -45,7 +45,17 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			var flags uintptr
 			flags |= syscall.MS_NOSUID|syscall.MS_NODEV
 
-			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(opts.optionsStrings(), fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)), ","))
+			// fuse: mount("apkg", "/pkg/main", "fuse.apkg", MS_NOSUID|MS_NODEV, "allow_other,fd=4,rootmode=40000,user_id=0,group_id=0"
+			// ours: mount("apkg", "/pkg/main", "fuse.apkg", MS_NOSUID|MS_NODEV, "allow_other,fsname=apkg,subtype=apkg,fd=7,rootmode=40000,user_id=0,group_id=0"
+
+			var r []string
+			r = append(r, opts.Options...)
+
+			if opts.AllowOther {
+				r = append(r, "allow_other")
+			}
+
+			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(r, fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)), ","))
 			if err == nil {
 				// success
 				runtime.UnlockOSThread()
