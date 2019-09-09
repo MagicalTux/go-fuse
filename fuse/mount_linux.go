@@ -43,7 +43,7 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			var flags uintptr
 			flags |= syscall.MS_NOATIME // added for performances TODO allow setting from opts
 
-			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(opts.optionsStrings(), fmt.Sprintf("fd=%d,rootmode=40000", fd)), ","))
+			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(opts.optionsStrings(), fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)), ","))
 			if err == nil {
 				// success
 				return fd, nil
