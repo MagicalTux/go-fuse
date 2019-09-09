@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -33,7 +32,6 @@ func unixgramSocketpair() (l, r *os.File, err error) {
 func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, err error) {
 	if os.Geteuid() == 0 {
 		// attempt to skip use of fusermount
-		runtime.LockOSThread()
 		fd, err := syscall.Open("/dev/fuse", os.O_RDWR, 0)
 		if err == nil {
 			// managed to open dev/fuse, attempt to mount
@@ -58,7 +56,6 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(r, fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)), ","))
 			if err == nil {
 				// success
-				runtime.UnlockOSThread()
 				return fd, nil
 			} else {
 				log.Printf("Warning: Call to mount failed: %s", err)
@@ -68,7 +65,6 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			log.Printf("Warning: Failed to open /dev/fuse: %s", err)
 		}
 		// in case errors happened we just fall back to the standard fusermount process
-		runtime.UnlockOSThread()
 	}
 
 	local, remote, err := unixgramSocketpair()
