@@ -1,4 +1,4 @@
-module github.com/MagicalTux/go-fuse/v2
+module github.com/MagicalTux/go-fuse
 
 require (
 	github.com/MagicalTux/go-fuse v1.0.0
