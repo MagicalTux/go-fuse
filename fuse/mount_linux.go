@@ -32,7 +32,7 @@ func unixgramSocketpair() (l, r *os.File, err error) {
 func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, err error) {
 	if os.Geteuid() == 0 {
 		// attempt to skip use of fusermount
-		fd, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
+		fd, err := syscall.Open("/dev/fuse", os.O_RDWR, 0)
 		if err == nil {
 			// managed to open dev/fuse, attempt to mount
 			source := opts.FsName
@@ -43,14 +43,14 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			var flags uintptr
 			flags |= syscall.MS_NOATIME // added for performances TODO allow setting from opts
 
-			err = syscall.Mount(opts.FsName, mountPoint, "fuse", flags, strings.Join(append(opts.optionsStrings(), fmt.Sprintf("fd=%d", fd.Fd())), ","))
+			err = syscall.Mount(opts.FsName, mountPoint, "fuse", flags, strings.Join(append(opts.optionsStrings(), fmt.Sprintf("fd=%d", fd)), ","))
 			if err == nil {
 				// success
-				return int(fd.Fd()), nil
+				return fd, nil
 			} else if opts.Debug {
 				log.Printf("Warning: Call to mount failed: %s", err)
 			}
-			fd.Close()
+			syscall.Close(fd)
 		} else if opts.Debug {
 			log.Printf("Warning: Failed to open /dev/fuse: %s", err)
 		}
