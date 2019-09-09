@@ -47,11 +47,11 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 			if err == nil {
 				// success
 				return fd, nil
-			} else if opts.Debug {
+			} else {
 				log.Printf("Warning: Call to mount failed: %s", err)
 			}
 			syscall.Close(fd)
-		} else if opts.Debug {
+		} else {
 			log.Printf("Warning: Failed to open /dev/fuse: %s", err)
 		}
 		// in case errors happened we just fall back to the standard fusermount process
