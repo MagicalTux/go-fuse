@@ -64,6 +64,7 @@ func mountDirect(mountPoint string, opts *MountOptions, ready chan<- error) (fd 
 	}
 
 	// success
+	close(ready)
 	return fd, nil
 }
 
