@@ -30,9 +30,9 @@ func unixgramSocketpair() (l, r *os.File, err error) {
 // Create a FUSE FS on the specified mount point without using
 // fusermount.
 func mountDirect(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, err error) {
-	fd, err := syscall.Open("/dev/fuse", os.O_RDWR, 0) // use syscall.Open since we want an int fd
+	fd, err = syscall.Open("/dev/fuse", os.O_RDWR, 0) // use syscall.Open since we want an int fd
 	if err != nil {
-		return 0, err
+		return
 	}
 
 	// managed to open dev/fuse, attempt to mount
@@ -60,12 +60,12 @@ func mountDirect(mountPoint string, opts *MountOptions, ready chan<- error) (fd 
 	err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, opts.DirectMountFlags, strings.Join(r, ","))
 	if err != nil {
 		syscall.Close(fd)
-		return 0, err
+		return
 	}
 
 	// success
 	close(ready)
-	return fd, nil
+	return
 }
 
 // Create a FUSE FS on the specified mount point.  The returned
