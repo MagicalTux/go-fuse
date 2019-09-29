@@ -27,44 +27,56 @@ func unixgramSocketpair() (l, r *os.File, err error) {
 	return
 }
 
+// Create a FUSE FS on the specified mount point without using
+// fusermount.
+func mountDirect(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, err error) {
+	fd, err := syscall.Open("/dev/fuse", os.O_RDWR, 0) // use syscall.Open since we want an int fd
+	if err != nil {
+		return 0, err
+	}
+
+	// managed to open dev/fuse, attempt to mount
+	source := opts.FsName
+	if source == "" {
+		source = opts.Name
+	}
+
+	var flags uintptr
+	flags |= syscall.MS_NOSUID | syscall.MS_NODEV
+
+	// some values we need to pass to mount, but override possible since opts.Options comes after
+	var r = []string{
+		fmt.Sprintf("fd=%d", fd),
+		"rootmode=40000",
+		"user_id=0",
+		"group_id=0",
+	}
+	r = append(r, opts.Options...)
+
+	if opts.AllowOther {
+		r = append(r, "allow_other")
+	}
+
+	err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, opts.DirectMountFlags, strings.Join(r, ","))
+	if err != nil {
+		syscall.Close(fd)
+		return 0, err
+	}
+
+	// success
+	return fd, nil
+}
+
 // Create a FUSE FS on the specified mount point.  The returned
 // mount point is always absolute.
 func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, err error) {
-	if os.Geteuid() == 0 {
-		// attempt to skip use of fusermount
-		fd, err := syscall.Open("/dev/fuse", os.O_RDWR, 0)
+	if opts.DirectMount {
+		fd, err := mountDirect(mountPoint, opts, ready)
 		if err == nil {
-			// managed to open dev/fuse, attempt to mount
-			source := opts.FsName
-			if source == "" {
-				source = opts.Name
-			}
-
-			var flags uintptr
-			flags |= syscall.MS_NOSUID|syscall.MS_NODEV
-
-			// fuse: mount("apkg", "/pkg/main", "fuse.apkg", MS_NOSUID|MS_NODEV, "allow_other,fd=4,rootmode=40000,user_id=0,group_id=0"
-			// ours: mount("apkg", "/pkg/main", "fuse.apkg", MS_NOSUID|MS_NODEV, "allow_other,fsname=apkg,subtype=apkg,fd=7,rootmode=40000,user_id=0,group_id=0"
-
-			var r []string
-			r = append(r, opts.Options...)
-
-			if opts.AllowOther {
-				r = append(r, "allow_other")
-			}
-
-			err = syscall.Mount(opts.FsName, mountPoint, "fuse."+opts.Name, flags, strings.Join(append(r, fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)), ","))
-			if err == nil {
-				// success
-				return fd, nil
-			} else {
-				log.Printf("Warning: Call to mount failed: %s", err)
-			}
-			syscall.Close(fd)
-		} else {
-			log.Printf("Warning: Failed to open /dev/fuse: %s", err)
+			return fd, nil
+		} else if opts.Debug {
+			log.Printf("mount: failed to do direct mount: %s", err)
 		}
-		// in case errors happened we just fall back to the standard fusermount process
 	}
 
 	local, remote, err := unixgramSocketpair()
@@ -117,8 +129,9 @@ func mount(mountPoint string, opts *MountOptions, ready chan<- error) (fd int, e
 	return fd, err
 }
 
-func unmount(mountPoint string) (err error) {
-	if os.Geteuid() == 0 {
+func unmount(mountPoint string, opts *MountOptions) (err error) {
+	if opts.DirectMount {
+		// Attempt to directly unmount, if fails fallback to fusermount method
 		err := syscall.Unmount(mountPoint, 0)
 		if err == nil {
 			return nil
