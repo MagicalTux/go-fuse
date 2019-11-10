@@ -20,6 +20,7 @@ import (
 )
 
 var All = map[string]func(*testing.T, string){
+	"AppendWrite":                AppendWrite,
 	"SymlinkReadlink":            SymlinkReadlink,
 	"FileBasic":                  FileBasic,
 	"TruncateFile":               TruncateFile,
@@ -29,9 +30,51 @@ var All = map[string]func(*testing.T, string){
 	"NlinkZero":                  NlinkZero,
 	"ParallelFileOpen":           ParallelFileOpen,
 	"Link":                       Link,
+	"LinkUnlinkRename":           LinkUnlinkRename,
 	"RenameOverwriteDestNoExist": RenameOverwriteDestNoExist,
 	"RenameOverwriteDestExist":   RenameOverwriteDestExist,
 	"ReadDir":                    ReadDir,
+	"ReadDirPicksUpCreate":       ReadDirPicksUpCreate,
+	"DirectIO":                   DirectIO,
+}
+
+func DirectIO(t *testing.T, mnt string) {
+	fn := mnt + "/file.txt"
+	fd, err := syscall.Open(fn, syscall.O_TRUNC|syscall.O_CREAT|syscall.O_DIRECT|syscall.O_WRONLY, 0644)
+	if err == syscall.EINVAL {
+		t.Skip("FS does not support O_DIRECT")
+	}
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if fd != 0 {
+			syscall.Close(fd)
+		}
+	}()
+	data := bytes.Repeat([]byte("bye"), 4096)
+	if n, err := syscall.Write(fd, data); err != nil || n != len(data) {
+		t.Fatalf("Write: %v (%d)", err, n)
+	}
+
+	err = syscall.Close(fd)
+	fd = 0
+	if err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fd, err = syscall.Open(fn, syscall.O_DIRECT|syscall.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Open 2: %v", err)
+	}
+
+	roundtrip := bytes.Repeat([]byte("xxx"), 4096)
+	if n, err := syscall.Read(fd, roundtrip); err != nil || n != len(data) {
+		t.Fatalf("ReadAt: %v (%d)", err, n)
+	}
+
+	if bytes.Compare(roundtrip, data) != 0 {
+		t.Errorf("roundtrip made changes: got %q.., want %q..", roundtrip[:10], data[:10])
+	}
 }
 
 // SymlinkReadlink tests basic symlink functionality
@@ -149,13 +192,9 @@ func FdLeak(t *testing.T, mnt string) {
 	}
 
 	if runtime.GOOS == "linux" {
-		infos, err := ioutil.ReadDir("/proc/self/fd")
-		if err != nil {
-			t.Errorf("ReadDir %v", err)
-		}
-
+		infos := listFds(0, "")
 		if len(infos) > 15 {
-			t.Errorf("found %d open file descriptors for 100x ReadFile", len(infos))
+			t.Errorf("found %d open file descriptors for 100x ReadFile: %v", len(infos), infos)
 		}
 	}
 }
@@ -265,6 +304,10 @@ func Link(t *testing.T, mnt string) {
 	if st.Ino != beforeIno {
 		t.Errorf("Lstat after: got %d, want %d", st.Ino, beforeIno)
 	}
+
+	if st.Nlink != 2 {
+		t.Errorf("Expect 2 links, got %d", st.Nlink)
+	}
 }
 
 func RenameOverwriteDestNoExist(t *testing.T, mnt string) {
@@ -311,39 +354,118 @@ func RenameOverwrite(t *testing.T, mnt string, destExists bool) {
 	}
 }
 
+// ReadDir creates 110 files one by one, checking that we get the expected
+// entries after each file creation.
 func ReadDir(t *testing.T, mnt string) {
-	f, err := os.Open(mnt)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-
-	// add entries after opening the directory
 	want := map[string]bool{}
+	// 40 bytes of filename, so 110 entries overflows a
+	// 4096 page.
 	for i := 0; i < 110; i++ {
-		// 40 bytes of filename, so 110 entries overflows a
-		// 4096 page.
 		nm := fmt.Sprintf("file%036x", i)
 		want[nm] = true
 		if err := ioutil.WriteFile(filepath.Join(mnt, nm), []byte("hello"), 0644); err != nil {
 			t.Fatalf("WriteFile %q: %v", nm, err)
 		}
+		// Verify that we get the expected entries
+		f, err := os.Open(mnt)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		names, err := f.Readdirnames(-1)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		f.Close()
+		got := map[string]bool{}
+		for _, e := range names {
+			got[e] = true
+		}
+		if len(got) != len(want) {
+			t.Errorf("got %d entries, want %d", len(got), len(want))
+		}
+		for k := range got {
+			if !want[k] {
+				t.Errorf("got unknown name %q", k)
+			}
+		}
+	}
+}
+
+// Readdir should pick file created after open, but before readdir.
+func ReadDirPicksUpCreate(t *testing.T, mnt string) {
+	f, err := os.Open(mnt)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
 
+	if err := ioutil.WriteFile(mnt+"/file", []byte{42}, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 	names, err := f.Readdirnames(-1)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	got := map[string]bool{}
-	for _, e := range names {
-		got[e] = true
+	f.Close()
+
+	if len(names) != 1 || names[0] != "file" {
+		t.Errorf("missing file created after opendir")
 	}
-	if len(got) != len(want) {
-		t.Errorf("got %d entries, want %d", len(got), len(want))
+}
+
+// LinkUnlinkRename implements rename with a link/unlink sequence
+func LinkUnlinkRename(t *testing.T, mnt string) {
+	content := []byte("hello")
+	tmp := mnt + "/tmpfile"
+	if err := ioutil.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatalf("WriteFile %q: %v", tmp, err)
 	}
-	for k := range got {
-		if !want[k] {
-			t.Errorf("got unknown name %q", k)
+
+	dest := mnt + "/file"
+	if err := syscall.Link(tmp, dest); err != nil {
+		t.Fatalf("Link %q %q: %v", tmp, dest, err)
+	}
+	if err := syscall.Unlink(tmp); err != nil {
+		t.Fatalf("Unlink %q: %v", tmp, err)
+	}
+
+	if back, err := ioutil.ReadFile(dest); err != nil {
+		t.Fatalf("Read %q: %v", dest, err)
+	} else if bytes.Compare(back, content) != 0 {
+		t.Fatalf("Read got %q want %q", back, content)
+	}
+}
+
+// test open with O_APPEND
+func AppendWrite(t *testing.T, mnt string) {
+	fd, err := syscall.Open(mnt+"/file", syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CREAT, 0644)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if fd != 0 {
+			syscall.Close(fd)
 		}
+	}()
+	if _, err := syscall.Write(fd, []byte("hello")); err != nil {
+		t.Fatalf("Write 1: %v", err)
+	}
+
+	if _, err := syscall.Write(fd, []byte("world")); err != nil {
+		t.Fatalf("Write 2: %v", err)
+	}
+
+	if err := syscall.Close(fd); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	fd = 0
+	want := []byte("helloworld")
+
+	got, err := ioutil.ReadFile(mnt + "/file")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	if bytes.Compare(got, want) != 0 {
+		t.Errorf("got %q want %q", got, want)
 	}
 }

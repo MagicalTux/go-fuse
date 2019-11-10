@@ -4,10 +4,10 @@ language: go
 go_import_path: github.com/hanwen/go-fuse
 
 go:
-  - 1.9.x
   - 1.10.x
   - 1.11.x
   - 1.12.x
+  - 1.13.x
   - master
 
 matrix:
@@ -25,5 +25,8 @@ install:
   - go get -t ./...
   - go get -t -race ./...
 
+# Travis CI has a no-output-timeout of 10 minutes.
+# Set a lower test timeout so we get proper backtraces
+# on a hung test.
 script:
-  - go test -v ./...
+  - go test -timeout 5m -v ./...

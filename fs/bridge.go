@@ -116,6 +116,9 @@ func (b *rawBridge) newInode(ctx context.Context, ops InodeEmbedder, id StableAt
 
 // addNewChild inserts the child into the tree. Returns file handle if file != nil.
 func (b *rawBridge) addNewChild(parent *Inode, name string, child *Inode, file FileHandle, fileFlags uint32, out *fuse.EntryOut) uint32 {
+	if name == "." || name == ".." {
+		log.Panicf("BUG: tried to add virtual entry %q to the actual tree", name)
+	}
 	lockNodes(parent, child)
 	parent.setEntry(name, child)
 	b.mu.Lock()
@@ -159,6 +162,7 @@ func (b *rawBridge) setAttr(out *fuse.Attr) {
 	if b.options.GID != 0 && out.Gid == 0 {
 		out.Gid = b.options.GID
 	}
+	setBlocks(out)
 }
 
 func (b *rawBridge) setAttrTimeout(out *fuse.AttrOut) {
@@ -244,7 +248,6 @@ func (b *rawBridge) Lookup(cancel <-chan struct{}, header *fuse.InHeader, name s
 	child.setEntryOut(out)
 	b.addNewChild(parent, name, child, nil, 0, out)
 	b.setEntryOutTimeout(out)
-
 	return fuse.OK
 }
 
@@ -428,11 +431,10 @@ func (b *rawBridge) getattr(ctx context.Context, n *Inode, f FileHandle, out *fu
 func (b *rawBridge) SetAttr(cancel <-chan struct{}, in *fuse.SetAttrIn, out *fuse.AttrOut) fuse.Status {
 	ctx := &fuse.Context{Caller: in.Caller, Cancel: cancel}
 
-	n, fEntry := b.inode(in.NodeId, in.Fh)
+	fh, _ := in.GetFh()
+
+	n, fEntry := b.inode(in.NodeId, fh)
 	f := fEntry.file
-	if in.Valid&fuse.FATTR_FH == 0 {
-		f = nil
-	}
 
 	var errno = syscall.ENOTSUP
 	if fops, ok := n.ops.(NodeSetattrer); ok {
@@ -459,9 +461,8 @@ func (b *rawBridge) Rename(cancel <-chan struct{}, input *fuse.RenameIn, oldName
 					log.Println("MvChild failed")
 				}
 			}
-
-			return errnoToStatus(errno)
 		}
+		return errnoToStatus(errno)
 	}
 	return fuse.ENOTSUP
 }
@@ -858,7 +859,7 @@ func (b *rawBridge) ReadDirPlus(cancel <-chan struct{}, input *fuse.ReadIn, out 
 	}
 
 	ctx := &fuse.Context{Caller: input.Caller, Cancel: cancel}
-	for f.dirStream.HasNext() {
+	for f.dirStream.HasNext() || f.hasOverflow {
 		var e fuse.DirEntry
 		var errno syscall.Errno
 
@@ -880,6 +881,15 @@ func (b *rawBridge) ReadDirPlus(cancel <-chan struct{}, input *fuse.ReadIn, out 
 			return fuse.OK
 		}
 
+		// Virtual entries "." and ".." should be part of the
+		// directory listing, but not part of the filesystem tree.
+		// The values in EntryOut are ignored by Linux
+		// (see fuse_direntplus_link() in linux/fs/fuse/readdir.c), so leave
+		// them at zero-value.
+		if e.Name == "." || e.Name == ".." {
+			continue
+		}
+
 		child, errno := b.lookup(ctx, n, e.Name, entryOut)
 		if errno != 0 {
 			if b.options.NegativeTimeout != nil {
@@ -890,9 +900,8 @@ func (b *rawBridge) ReadDirPlus(cancel <-chan struct{}, input *fuse.ReadIn, out 
 			child.setEntryOut(entryOut)
 			b.setEntryOutTimeout(entryOut)
 			if (e.Mode &^ 07777) != (child.stableAttr.Mode &^ 07777) {
-				// should go back and change the
-				// already serialized entry
-				log.Panicf("mode mismatch between readdir %o and lookup %o", e.Mode, child.stableAttr.Mode)
+				// The file type has changed behind our back. Use the new value.
+				out.FixMode(child.stableAttr.Mode)
 			}
 			entryOut.Mode = child.stableAttr.Mode | (entryOut.Mode & 07777)
 		}

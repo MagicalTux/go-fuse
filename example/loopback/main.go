@@ -89,6 +89,10 @@ func main() {
 	}
 	opts.Debug = *debug
 	opts.AllowOther = *other
+	// First column in "df -T": original dir
+	opts.MountOptions.Options = append(opts.MountOptions.Options, "fsname="+orig)
+	// Second column in "df -T" will be shown as "fuse." + Name
+	opts.MountOptions.Name = "loopback"
 	server, err := fs.Mount(flag.Arg(0), loopbackRoot, opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)

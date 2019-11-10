@@ -51,14 +51,18 @@ type testOptions struct {
 	entryCache    bool
 	attrCache     bool
 	suppressDebug bool
+	testDir       string
 }
 
 func newTestCase(t *testing.T, opts *testOptions) *testCase {
 	if opts == nil {
 		opts = &testOptions{}
 	}
+	if opts.testDir == "" {
+		opts.testDir = testutil.TempDir()
+	}
 	tc := &testCase{
-		dir: testutil.TempDir(),
+		dir: opts.testDir,
 		T:   t,
 	}
 	tc.origDir = tc.dir + "/orig"
@@ -137,20 +141,6 @@ func TestBasic(t *testing.T) {
 	}
 }
 
-func TestFileBasic(t *testing.T) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.FileBasic(t, tc.mntDir)
-}
-
-func TestFileTruncate(t *testing.T) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.TruncateFile(t, tc.mntDir)
-}
-
 func TestFileFdLeak(t *testing.T) {
 	tc := newTestCase(t, &testOptions{
 		suppressDebug: true,
@@ -172,56 +162,6 @@ func TestFileFdLeak(t *testing.T) {
 	if got := len(bridge.files); got > 3 {
 		t.Errorf("found %d used file handles, should be <= 3", got)
 	}
-}
-
-func TestMkdir(t *testing.T) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.MkdirRmdir(t, tc.mntDir)
-}
-
-func testRenameOverwrite(t *testing.T, destExists bool) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-	posixtest.RenameOverwrite(t, tc.mntDir, destExists)
-}
-
-func TestRenameDestExist(t *testing.T) {
-	testRenameOverwrite(t, true)
-}
-
-func TestRenameDestNoExist(t *testing.T) {
-	testRenameOverwrite(t, false)
-}
-
-func TestNlinkZero(t *testing.T) {
-	// xfstest generic/035.
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.NlinkZero(t, tc.mntDir)
-}
-
-func TestParallelFileOpen(t *testing.T) {
-	tc := newTestCase(t, &testOptions{suppressDebug: true, attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.ParallelFileOpen(t, tc.mntDir)
-}
-
-func TestSymlink(t *testing.T) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.SymlinkReadlink(t, tc.mntDir)
-}
-
-func TestLink(t *testing.T) {
-	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
-	defer tc.Clean()
-
-	posixtest.Link(t, tc.mntDir)
 }
 
 func TestNotifyEntry(t *testing.T) {
@@ -257,22 +197,17 @@ func TestNotifyEntry(t *testing.T) {
 	}
 }
 
-func TestReadDir(t *testing.T) {
-	tc := newTestCase(t, &testOptions{
-		suppressDebug: true,
-		attrCache:     true,
-		entryCache:    true,
-	})
-	defer tc.Clean()
-
-	posixtest.ReadDir(t, tc.mntDir)
-}
-
 func TestReadDirStress(t *testing.T) {
 	tc := newTestCase(t, &testOptions{suppressDebug: true, attrCache: true, entryCache: true})
 	defer tc.Clean()
-	// (ab)use posixtest.ReadDir to create 110 test files
-	posixtest.ReadDir(t, tc.mntDir)
+
+	// Create 110 entries
+	for i := 0; i < 110; i++ {
+		name := fmt.Sprintf("file%036x", i)
+		if err := ioutil.WriteFile(filepath.Join(tc.mntDir, name), []byte("hello"), 0644); err != nil {
+			t.Fatalf("WriteFile %q: %v", name, err)
+		}
+	}
 
 	var wg sync.WaitGroup
 	stress := func(gr int) {
@@ -407,11 +342,47 @@ func TestMknod(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	tc := newTestCase(t, &testOptions{})
-	defer tc.Clean()
+func TestPosix(t *testing.T) {
+	noisy := map[string]bool{
+		"ParallelFileOpen": true,
+		"ReadDir":          true,
+	}
 
-	posixtest.TruncateNoFile(t, tc.mntDir)
+	for nm, fn := range posixtest.All {
+		t.Run(nm, func(t *testing.T) {
+			tc := newTestCase(t, &testOptions{
+				suppressDebug: noisy[nm],
+				attrCache:     true, entryCache: true})
+			defer tc.Clean()
+
+			fn(t, tc.mntDir)
+		})
+	}
+}
+
+func TestOpenDirectIO(t *testing.T) {
+	// Apparently, tmpfs does not allow O_DIRECT, so try to create
+	// a test temp directory in the home directory.
+	ext4Dir := filepath.Join(os.Getenv("HOME"), ".go-fuse-test")
+	if err := os.MkdirAll(ext4Dir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	defer os.RemoveAll(ext4Dir)
+
+	posixtest.DirectIO(t, ext4Dir)
+	if t.Failed() {
+		t.Skip("DirectIO failed on underlying FS")
+	}
+
+	opts := testOptions{
+		testDir:    ext4Dir,
+		attrCache:  true,
+		entryCache: true,
+	}
+
+	tc := newTestCase(t, &opts)
+	defer tc.Clean()
+	posixtest.DirectIO(t, tc.mntDir)
 }
 
 func init() {
